@@ -1,0 +1,78 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no">
+  <script src="https://unpkg.com/@webcomponents/webcomponentsjs@2.0.0/webcomponents-bundle.js" type="text/javascript"></script>
+  <script type="text/javascript" src="/js/main.js"></script>
+
+
+
+</head>
+<body>
+	<script type="text/javascript">
+    var currentTime = new Date().getTime();
+    var width = window.innerWidth;
+    var height = window.innerHeight;	
+    
+    var app = Elm.Main.init({flags: {currentTime: currentTime, width: width, height: height}});
+    
+    /////////////////////////////////////////////////////////////////
+    
+    customElements.define('custom-textarea', class extends HTMLElement {
+    
+      constructor(){
+        super();
+        
+      }
+      
+      get selection(){
+        this._textarea = this.querySelector('textarea');
+        var start = this._textarea.selectionStart;
+        var finish = this._textarea.selectionEnd;
+        var sel = this._textarea.value.substring(start, finish);
+        
+        return { start: start, 
+                 finish: finish,
+                 sel: sel
+               };  
+      }
+
+      get value(){
+        this._textarea = this.querySelector('textarea');
+        return this._textarea.value;
+      }
+      
+      get cols(){
+        return this._cols || "0";
+      }
+
+      set selection(offset){
+        if(offset !== null) {
+          if (this.querySelector('textarea') !== null){
+            this._textarea = this.querySelector('textarea');
+            this._textarea.focus();
+            this._textarea.setSelectionRange(offset.start,offset.stop);
+          }
+        }
+      }
+
+      connectedCallback() {
+        this._textarea = this.querySelector('textarea');
+            
+        this._textarea.addEventListener('click', (event) => {
+          this.dispatchEvent(new CustomEvent('Selection'));
+        });
+
+        this._textarea.addEventListener('input', (event) => {
+          this.dispatchEvent(new CustomEvent('Input'));
+        });
+      }
+    });
+
+    /////////////////////////////////////////////////////////////////
+
+    </script>
+</body>
+
+</html>
