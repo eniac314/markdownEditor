@@ -29,11 +29,11 @@
       get selection(){
         this._textarea = this.querySelector('textarea');
         var start = this._textarea.selectionStart;
-        var finish = this._textarea.selectionEnd;
-        var sel = this._textarea.value.substring(start, finish);
+        var stop = this._textarea.selectionEnd;
+        var sel = this._textarea.value.substring(start, stop);
         
         return { start: start, 
-                 finish: finish,
+                 stop: stop,
                  sel: sel
                };  
       }
