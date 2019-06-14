@@ -31,12 +31,13 @@ type alias Model b =
     { seed : Random.Seed
     , maxWidth : Int
     , selected : Maybe Selection
-    , cursorPos : Maybe Int
     , setSelection : Maybe E.Value
     , rawInput : String
-    , parsedInput : List (Block b InlineStyle)
-    , stylesIndexes : Dict String InlineStyle
-    , currentStyle : Maybe ( InlineStyleBounds, InlineStyle )
+    , undoBuffer : List UndoAction
+    , parsedInput : List (Block b CustomStyle)
+    , stylesIndexes : Dict String CustomStyle
+    , selectionStyle : Maybe ( CustomStyleBounds, CustomStyle )
+    , articleStyle : List StyleAttribute
     , openedWidget : Maybe Widget
     }
 
@@ -48,6 +49,11 @@ type alias Path =
 type Widget
     = FontColorPicker
     | BackgroundColorPicker
+
+
+type UndoAction
+    = InputStringModif String
+    | ArticleStyleModif (List StyleAttribute)
 
 
 subscriptions model =
@@ -81,11 +87,40 @@ type Msg
       TextInput CustomInput
     | NewSelection Selection
     | SetSelection
-      ----------------
-      -- Set styles --
-      ----------------
+    | Undo
+      --------------------
+      -- Insert markdown--
+      --------------------
+    | InsertBold
+    | InsertItalic
+    | InsertStriked
+    | InsertTitle Int
+    | InsertList
+      -----------------------
+      -- Set custom styles --
+      -----------------------
     | SetTextColor String
     | SetBackgroundColor String
+    | SetFont String
+    | SetFontSize Int
+    | RemoveCustomStyle
+      -----------
+      -- Links --
+      -----------
+    | OpenInternalLinks
+    | InsertInternalLink
+    | OpenDocuments
+    | InsertDocumentLink
+    | InsertExternalLink
+      ------------
+      -- Medias --
+      ------------
+    | OpenImageWidget
+    | PickImage
+    | SetImageCaption
+    | SetImageAlignment
+    | InsertImage
+    | InsertVideo
       ----------
       -- Misc --
       ----------
@@ -108,18 +143,24 @@ init flags =
     ( { seed = Random.initialSeed flags.currentTime
       , maxWidth = flags.width
       , selected = Nothing
-      , cursorPos = Nothing
       , setSelection = Nothing
       , rawInput = sampleString
+      , undoBuffer = []
       , parsedInput = []
       , stylesIndexes = Dict.empty
-      , currentStyle = Nothing
+      , selectionStyle = Nothing
+      , articleStyle =
+            [ Font "Times New Roman"
+            , FontSize 18
+            , Color "black"
+            ]
       , openedWidget = Nothing
       }
     , Cmd.none
     )
 
 
+update : Msg -> Model b -> ( Model b, Cmd Msg )
 update msg model =
     case msg of
         ---------------------------
@@ -130,13 +171,16 @@ update msg model =
                 rawInput =
                     valueStr
 
+                undoBuffer =
+                    List.take 5 <| InputStringModif model.rawInput :: model.undoBuffer
+
                 parsedInput =
                     Block.parse (Just { defaultOptions | softAsHardLineBreak = True })
                         valueStr
                         |> List.map addCustomStyles
 
                 stylesIndexes =
-                    case Parser.run inlineStylesOffsets valueStr of
+                    case Parser.run customStylesOffsets valueStr of
                         Ok indexes ->
                             indexes
 
@@ -150,23 +194,16 @@ update msg model =
                     else
                         Just selection
 
-                cursorPos =
-                    if selection.start == selection.stop then
-                        Just selection.start
-
-                    else
-                        Nothing
-
-                currentStyle =
-                    findInlineStyleFromCursorPos stylesIndexes selection
+                selectionStyle =
+                    findCustomStyleFromCursorPos stylesIndexes selection
             in
             ( { model
                 | rawInput = rawInput
+                , undoBuffer = undoBuffer
                 , parsedInput = parsedInput
                 , stylesIndexes = stylesIndexes
                 , selected = selected
-                , cursorPos = cursorPos
-                , currentStyle = currentStyle
+                , selectionStyle = selectionStyle
               }
             , Cmd.none
             )
@@ -176,9 +213,9 @@ update msg model =
                 isCursor =
                     s.start == s.stop
 
-                currentStyle =
+                selectionStyle =
                     if isCursor then
-                        findInlineStyleFromCursorPos model.stylesIndexes s
+                        findCustomStyleFromCursorPos model.stylesIndexes s
 
                     else
                         Nothing
@@ -188,29 +225,23 @@ update msg model =
                         (\( { styleStart, styleStop }, _ ) ->
                             encodeSelection styleStart styleStop
                         )
-                        currentStyle
+                        selectionStyle
             in
             ( { model
                 | selected =
-                    case currentStyle of
+                    case selectionStyle of
                         Just ( { styleStart, styleStop }, _ ) ->
                             Just (Selection styleStart styleStop)
 
                         Nothing ->
                             Just s
-                , cursorPos =
-                    if isCursor then
-                        Just s.start
-
-                    else
-                        Nothing
-                , currentStyle = currentStyle
+                , selectionStyle = selectionStyle
                 , setSelection =
                     Maybe.map
                         (\( { styleStart, styleStop }, _ ) ->
                             encodeSelection styleStart styleStop
                         )
-                        currentStyle
+                        selectionStyle
               }
             , Cmd.none
             )
@@ -222,28 +253,179 @@ update msg model =
                         (\( { styleStart, styleStop }, _ ) ->
                             encodeSelection styleStart styleStop
                         )
-                        model.currentStyle
+                        model.selectionStyle
               }
             , Cmd.batch
                 []
             )
 
-        ----------------
-        -- Set styles --
-        ----------------
+        Undo ->
+            case model.undoBuffer of
+                [] ->
+                    ( model, Cmd.none )
+
+                (InputStringModif valueStr) :: xs ->
+                    let
+                        rawInput =
+                            valueStr
+
+                        undoBuffer =
+                            xs
+
+                        parsedInput =
+                            Block.parse (Just { defaultOptions | softAsHardLineBreak = True })
+                                valueStr
+                                |> List.map addCustomStyles
+
+                        stylesIndexes =
+                            case Parser.run customStylesOffsets valueStr of
+                                Ok indexes ->
+                                    indexes
+
+                                _ ->
+                                    Dict.empty
+
+                        selected =
+                            Nothing
+
+                        selectionStyle =
+                            Nothing
+                    in
+                    ( { model
+                        | rawInput = rawInput
+                        , undoBuffer = undoBuffer
+                        , parsedInput = parsedInput
+                        , stylesIndexes = stylesIndexes
+                        , selected = selected
+                        , selectionStyle = selectionStyle
+                      }
+                    , Cmd.none
+                    )
+
+                (ArticleStyleModif articleStyle) :: xs ->
+                    ( { model
+                        | articleStyle = articleStyle
+                        , undoBuffer = xs
+                      }
+                    , Cmd.none
+                    )
+
+        ---------------------
+        -- Insert markdown --
+        ---------------------
+        InsertBold ->
+            ( model, Cmd.none )
+
+        InsertItalic ->
+            ( model, Cmd.none )
+
+        InsertStriked ->
+            ( model, Cmd.none )
+
+        InsertTitle level ->
+            ( model, Cmd.none )
+
+        InsertList ->
+            ( model, Cmd.none )
+
+        -----------------------
+        -- Set custom styles --
+        -----------------------
         SetTextColor color ->
-            case model.currentStyle of
+            case model.selectionStyle of
                 Nothing ->
-                    ( insertStyle { model | openedWidget = Nothing } [ Color color ]
+                    ( insertCustomStyle { model | openedWidget = Nothing } [ Color color ]
                     , Cmd.none
                     )
 
                 Just cs ->
-                    ( updateStyle { model | openedWidget = Nothing } cs [ Color color ]
+                    ( updateCustomStyle { model | openedWidget = Nothing } cs [ Color color ]
                     , Cmd.none
                     )
 
         SetBackgroundColor color ->
+            case model.selectionStyle of
+                Nothing ->
+                    ( insertCustomStyle { model | openedWidget = Nothing } [ BackgroundColor color ]
+                    , Cmd.none
+                    )
+
+                Just cs ->
+                    ( updateCustomStyle { model | openedWidget = Nothing } cs [ BackgroundColor color ]
+                    , Cmd.none
+                    )
+
+        SetFont font ->
+            case model.selectionStyle of
+                Nothing ->
+                    ( insertCustomStyle model [ Font font ]
+                    , Cmd.none
+                    )
+
+                Just cs ->
+                    ( updateCustomStyle model cs [ Font font ]
+                    , Cmd.none
+                    )
+
+        SetFontSize n ->
+            case model.selectionStyle of
+                Nothing ->
+                    ( insertCustomStyle model [ FontSize n ]
+                    , Cmd.none
+                    )
+
+                Just cs ->
+                    ( updateCustomStyle model cs [ FontSize n ]
+                    , Cmd.none
+                    )
+
+        RemoveCustomStyle ->
+            case model.selectionStyle of
+                Nothing ->
+                    ( model, Cmd.none )
+
+                Just cs ->
+                    ( removeCustomStyle model cs
+                    , Cmd.none
+                    )
+
+        -----------
+        -- Links --
+        -----------
+        OpenInternalLinks ->
+            ( model, Cmd.none )
+
+        InsertInternalLink ->
+            ( model, Cmd.none )
+
+        OpenDocuments ->
+            ( model, Cmd.none )
+
+        InsertDocumentLink ->
+            ( model, Cmd.none )
+
+        InsertExternalLink ->
+            ( model, Cmd.none )
+
+        ------------
+        -- Medias --
+        ------------
+        OpenImageWidget ->
+            ( model, Cmd.none )
+
+        PickImage ->
+            ( model, Cmd.none )
+
+        SetImageCaption ->
+            ( model, Cmd.none )
+
+        SetImageAlignment ->
+            ( model, Cmd.none )
+
+        InsertImage ->
+            ( model, Cmd.none )
+
+        InsertVideo ->
             ( model, Cmd.none )
 
         ----------
@@ -257,14 +439,24 @@ update msg model =
 
         OpenFontColorPicker ->
             ( { model
-                | openedWidget = Just FontColorPicker
+                | openedWidget =
+                    if model.openedWidget == Just FontColorPicker then
+                        Nothing
+
+                    else
+                        Just FontColorPicker
               }
             , Cmd.none
             )
 
         OpenBackgroundColorPicker ->
             ( { model
-                | openedWidget = Just BackgroundColorPicker
+                | openedWidget =
+                    if model.openedWidget == Just BackgroundColorPicker then
+                        Nothing
+
+                    else
+                        Just BackgroundColorPicker
               }
             , Cmd.none
             )
@@ -280,11 +472,12 @@ update msg model =
             ( model, Cmd.none )
 
 
-findInlineStyleFromCursorPos stylesIndexes s =
+findCustomStyleFromCursorPos : Dict String CustomStyle -> Selection -> Maybe ( CustomStyleBounds, CustomStyle )
+findCustomStyleFromCursorPos stylesIndexes s =
     Dict.Extra.find
         (\k _ -> cursorInBounds s.start k)
         stylesIndexes
-        |> Maybe.map (Tuple.mapFirst stringToInlineStyleBounds)
+        |> Maybe.map (Tuple.mapFirst stringToCustomStyleBounds)
         |> Maybe.andThen
             (\( mbBounds, is ) ->
                 case mbBounds of
@@ -296,8 +489,20 @@ findInlineStyleFromCursorPos stylesIndexes s =
             )
 
 
-insertStyle : Model b -> List StyleAttribute -> Model b
-insertStyle model newStyleAttrs =
+
+--insertMarkdown : Model b -> Model b
+--insertMarkdown model =
+--    case model.selected of
+--        Just ({ start, stop } as sel) ->
+
+
+insertBoldMarkdown : String -> String
+insertBoldMarkdown s =
+    "**" ++ String.trim s ++ "**"
+
+
+insertCustomStyle : Model b -> List StyleAttribute -> Model b
+insertCustomStyle model newStyleAttrs =
     case model.selected of
         Just ({ start, stop } as sel) ->
             let
@@ -308,10 +513,10 @@ insertStyle model newStyleAttrs =
                         }
 
                 newStyleStr =
-                    inlineStyleToString newStyle
+                    customStyleToString newStyle
 
                 newSelection =
-                    case Parser.run inlineStyleOffsets newStyleStr of
+                    case Parser.run customStyleOffsets newStyleStr of
                         Ok ( { styleStart, styleStop }, _ ) ->
                             Selection (stop + styleStart) (stop + styleStop)
 
@@ -331,17 +536,24 @@ insertStyle model newStyleAttrs =
                 |> Tuple.first
 
         _ ->
-            model
+            { model
+                | articleStyle =
+                    uniqueBy styleAttrsCat <|
+                        newStyleAttrs
+                            ++ model.articleStyle
+                , undoBuffer =
+                    List.take 5 <| ArticleStyleModif model.articleStyle :: model.undoBuffer
+            }
 
 
-updateStyle : Model b -> ( InlineStyleBounds, InlineStyle ) -> List StyleAttribute -> Model b
-updateStyle model ( { styleStart, styleStop }, cs ) newStyleAttrs =
+updateCustomStyle : Model b -> ( CustomStyleBounds, CustomStyle ) -> List StyleAttribute -> Model b
+updateCustomStyle model ( { styleStart, styleStop }, cs ) newStyleAttrs =
     let
         newStyle =
-            combineStyles cs newStyleAttrs
+            combineCustomStyles cs newStyleAttrs
 
         newAttrStr =
-            attrsToString newStyleAttrs
+            attrsToString newStyle
 
         prefix =
             String.left styleStart model.rawInput
@@ -356,16 +568,43 @@ updateStyle model ( { styleStart, styleStop }, cs ) newStyleAttrs =
         |> Tuple.first
 
 
-combineStyles : InlineStyle -> List StyleAttribute -> InlineStyle
-combineStyles current new =
+removeCustomStyle : Model b -> ( CustomStyleBounds, CustomStyle ) -> Model b
+removeCustomStyle model ( { bodyStart, bodyStop, styleStop }, _ ) =
+    let
+        prefix =
+            String.left bodyStart model.rawInput
+
+        body =
+            String.slice (bodyStart + 1) (bodyStop - 1) model.rawInput
+
+        suffix =
+            String.dropLeft styleStop model.rawInput
+
+        newValueStr =
+            prefix ++ body ++ suffix
+    in
+    update (TextInput (CustomInput (Selection bodyStop bodyStop) newValueStr)) model
+        |> Tuple.first
+
+
+combineCustomStyles : CustomStyle -> List StyleAttribute -> List StyleAttribute
+combineCustomStyles current new =
     case current of
         Styled cs ->
-            Styled { cs | attrs = uniqueBy styleAttrsCat <| new ++ cs.attrs }
+            uniqueBy styleAttrsCat <| new ++ cs.attrs
 
         _ ->
-            current
+            []
 
 
+
+-------------------------------------------------------------------------------
+--------------------
+-- View functions --
+--------------------
+
+
+view : Model b -> Browser.Document Msg
 view model =
     { title = ""
     , body =
@@ -376,30 +615,11 @@ view model =
                 , width (px (min 1000 model.maxWidth))
                 , centerX
                 ]
-                [ selectionInfoView model
-                , colorPicker
-                    "fontColorPicker"
-                    (model.openedWidget == Just FontColorPicker)
-                    (Maybe.andThen
-                        (\( _, is ) ->
-                            extractAttr
-                                (\a ->
-                                    case a of
-                                        Color c ->
-                                            Just c
-
-                                        _ ->
-                                            Nothing
-                                )
-                                is
-                        )
-                        model.currentStyle
-                    )
-                    OpenFontColorPicker
-                    SetTextColor
-                    "Set text color"
+                [ customStylesControlView model
                 , customTextArea
-                    [ width fill ]
+                    [ width fill
+                    , padding 15
+                    ]
                     model.setSelection
                     500
                     model.rawInput
@@ -407,31 +627,28 @@ view model =
                     |> column
                         [ width fill
                         , spacing 15
-                        , Font.family
-                            [ Font.typeface "Lato"
-                            , Font.sansSerif
-                            ]
+                        , padding 15
+                        , Border.rounded 5
+                        , articleFont model.articleStyle
+                        , articleFontSize model.articleStyle
+                        , articleColor model.articleStyle
+                        , articleBackgroundColor model.articleStyle
                         ]
-                , paragraph []
-                    [ text (Debug.toString model.parsedInput) ]
-                , paragraph []
-                    [ text (Debug.toString <| Parser.run inlineStylesOffsets model.rawInput) ]
+
+                --, paragraph []
+                --    [ text (Debug.toString model.parsedInput) ]
+                --, text <| Debug.toString model.selectionStyle
+                --, paragraph []
+                --    [ text (Debug.toString <| Parser.run customStylesOffsets model.rawInput) ]
                 ]
             )
         ]
     }
 
 
+selectionInfoView : Model b -> Element Msg
 selectionInfoView model =
     let
-        cursorView =
-            case model.cursorPos of
-                Nothing ->
-                    "Nothing"
-
-                Just n ->
-                    String.fromInt n
-
         selectionView =
             case model.selected of
                 Nothing ->
@@ -445,8 +662,110 @@ selectionInfoView model =
     in
     row
         [ spacing 15 ]
-        [ text <| "cursor: " ++ cursorView
-        , text <| "selection bounds: " ++ selectionView
+        [ text <| "selection bounds: " ++ selectionView
+        ]
+
+
+customStylesControlView : Model b -> Element Msg
+customStylesControlView model =
+    row
+        [ spacing 15
+        , paddingXY 15 0
+        , Font.size 16
+        ]
+        [ colorPicker
+            "fontColorPicker"
+            (model.openedWidget == Just FontColorPicker)
+            (extractAttr extractColor model.articleStyle model.selectionStyle)
+            OpenFontColorPicker
+            SetTextColor
+            "Set text color"
+        , colorPicker
+            "backgroundColorPicker"
+            (model.openedWidget == Just BackgroundColorPicker)
+            (extractAttr extractBackgroundColor model.articleStyle model.selectionStyle)
+            OpenBackgroundColorPicker
+            SetBackgroundColor
+            "Set background color"
+        , fontsControllerView model
+        , Input.button
+            (buttonStyle (model.selectionStyle /= Nothing))
+            { onPress =
+                if model.selectionStyle /= Nothing then
+                    Just RemoveCustomStyle
+
+                else
+                    Nothing
+            , label = text "Remove Style"
+            }
+        , Input.button
+            (buttonStyle (model.undoBuffer /= []))
+            { onPress =
+                if model.undoBuffer /= [] then
+                    Just Undo
+
+                else
+                    Nothing
+            , label = text "Undo"
+            }
+        ]
+
+
+fontsControllerView : Model b -> Element Msg
+fontsControllerView model =
+    let
+        fontOptionView selectedFont f =
+            Html.option
+                [ HtmlAttr.value f
+                , HtmlAttr.selected (selectedFont == (Just <| f))
+                ]
+                [ Html.text f ]
+
+        fontSizeOptionView selectedSize fs =
+            let
+                selected =
+                    String.toInt fs
+                        |> Maybe.map (\fs_ -> selectedSize == (Just <| fs_))
+                        |> Maybe.withDefault False
+            in
+            Html.option
+                [ HtmlAttr.value fs
+                , HtmlAttr.selected selected
+                ]
+                [ Html.text fs ]
+    in
+    row
+        [ spacing 15 ]
+        [ el
+            []
+            (html <|
+                Html.select
+                    [ HtmlEvents.onInput SetFont ]
+                    (List.map
+                        (fontOptionView
+                            (extractAttr extractFont model.articleStyle model.selectionStyle)
+                        )
+                        (List.sort fonts)
+                    )
+            )
+        , el
+            []
+            (html <|
+                Html.select
+                    [ HtmlEvents.onInput
+                        (\n ->
+                            String.toInt n
+                                |> Maybe.withDefault 16
+                                |> SetFontSize
+                        )
+                    ]
+                    (List.map
+                        (fontSizeOptionView
+                            (extractAttr extractFontSize model.articleStyle model.selectionStyle)
+                        )
+                        fontSizes
+                    )
+            )
         ]
 
 
@@ -515,15 +834,10 @@ customTextArea attrs setSelection height rawInput =
                 [ Html.textarea
                     [ HtmlAttr.style "font-family" "Arial"
                     , HtmlAttr.style "font-size" "16px"
-                    , HtmlAttr.cols
-                        (if height == 300 then
-                            70
-
-                         else
-                            60
-                        )
+                    , HtmlAttr.style "width" "100%"
                     , HtmlAttr.style "height" (String.fromInt height ++ "px")
-                    , HtmlAttr.style "spellcheck" "false"
+                    , HtmlAttr.style "padding" "15px"
+                    , HtmlAttr.spellcheck False
                     , HtmlAttr.style "background-color" "Beige"
                     , HtmlAttr.value rawInput
                     ]
@@ -546,7 +860,6 @@ decodeSelection =
         (D.map2 Selection
             (D.field "start" D.int)
             (D.field "stop" D.int)
-            --(D.field "sel" D.string)
             |> D.map NewSelection
         )
 
@@ -556,28 +869,26 @@ decodeSelection =
 -----------------------------------------
 -- Custom markdown parser and renderer --
 -----------------------------------------
+--renderMarkdown : String -> (String -> msg) -> Element msg
+--renderMarkdown s downloadHandler =
+--    Block.parse (Just { defaultOptions | softAsHardLineBreak = True }) s
+--        |> blocksToElements downloadHandler
+--        |> column
+--            [ width fill
+--            , spacing 15
+--            , Font.family
+--                [ Font.typeface "Lato"
+--                , Font.sansSerif
+--                ]
+--            ]
 
 
-renderMarkdown : String -> (String -> msg) -> Element msg
-renderMarkdown s downloadHandler =
-    Block.parse (Just { defaultOptions | softAsHardLineBreak = True }) s
-        |> blocksToElements downloadHandler
-        |> column
-            [ width fill
-            , spacing 15
-            , Font.family
-                [ Font.typeface "Lato"
-                , Font.sansSerif
-                ]
-            ]
-
-
-blocksToElements : (String -> msg) -> List (Block b InlineStyle) -> List (Element msg)
+blocksToElements : (String -> msg) -> List (Block b CustomStyle) -> List (Element msg)
 blocksToElements downloadHandler blocks =
     List.map (blockToElement downloadHandler 0) blocks
 
 
-blockToElement : (String -> msg) -> Int -> Block b InlineStyle -> Element msg
+blockToElement : (String -> msg) -> Int -> Block b CustomStyle -> Element msg
 blockToElement downloadHandler offset block =
     case block of
         BlankLine s ->
@@ -603,12 +914,13 @@ blockToElement downloadHandler offset block =
 
         Paragraph raw inlines ->
             paragraph
-                [ Font.family
-                    [ Font.typeface "Times New Roman"
-                    , Font.serif
-                    ]
-                , Font.size 18
-                ]
+                --[ Font.family
+                --    [ Font.typeface "Times New Roman"
+                --    , Font.serif
+                --    ]
+                --, Font.size 18
+                --]
+                []
                 (List.concatMap (inlinesToElements downloadHandler []) inlines)
 
         BlockQuote blocks ->
@@ -648,12 +960,13 @@ blockToElement downloadHandler offset block =
                                     Ordered start ->
                                         el [ alignTop ] (text <| String.fromInt (start + i) ++ ". ")
                                 , paragraph
-                                    [ Font.family
-                                        [ Font.typeface "Times New Roman"
-                                        , Font.serif
-                                        ]
-                                    , Font.size 18
-                                    ]
+                                    --[ Font.family
+                                    --    [ Font.typeface "Times New Roman"
+                                    --    , Font.serif
+                                    --    ]
+                                    --, Font.size 18
+                                    --]
+                                    []
                                     (List.map (blockToElement downloadHandler (offset + 1)) bs)
                                 ]
                             ]
@@ -712,11 +1025,11 @@ headings downloadHandler raw level inlines =
         (List.concatMap (inlinesToElements downloadHandler []) inlines)
 
 
-parseCustomStyles : Inline InlineStyle -> List (Inline InlineStyle)
+parseCustomStyles : Inline CustomStyle -> List (Inline CustomStyle)
 parseCustomStyles inline =
     case inline of
         Text s ->
-            case Parser.run inlineStyles s of
+            case Parser.run customStyles s of
                 Ok res ->
                     List.foldr
                         (\is acc ->
@@ -740,7 +1053,7 @@ parseCustomStyles inline =
             [ inline ]
 
 
-inlinesToElements : (String -> msg) -> List (Attribute msg) -> Inline InlineStyle -> List (Element msg)
+inlinesToElements : (String -> msg) -> List (Attribute msg) -> Inline CustomStyle -> List (Element msg)
 inlinesToElements downloadHandler attrs inline =
     case inline of
         Text s ->
@@ -832,7 +1145,7 @@ inlinesToElements downloadHandler attrs inline =
 -------------------------
 
 
-type InlineStyle
+type CustomStyle
     = Styled
         { styled : String
         , attrs : List StyleAttribute
@@ -840,14 +1153,23 @@ type InlineStyle
     | Regular String
 
 
-extractAttr : (StyleAttribute -> Maybe a) -> InlineStyle -> Maybe a
-extractAttr p is =
-    case is of
-        Regular _ ->
-            Nothing
+extractAttr : (StyleAttribute -> Maybe a) -> List StyleAttribute -> Maybe ( CustomStyleBounds, CustomStyle ) -> Maybe a
+extractAttr p articleStyle cs =
+    case cs of
+        Just ( _, Styled { attrs } ) ->
+            case
+                List.filterMap p attrs
+                    |> List.head
+            of
+                Just customStyle_ ->
+                    Just customStyle_
 
-        Styled { attrs } ->
-            List.filterMap p attrs
+                Nothing ->
+                    List.filterMap p articleStyle
+                        |> List.head
+
+        _ ->
+            List.filterMap p articleStyle
                 |> List.head
 
 
@@ -855,6 +1177,7 @@ type StyleAttribute
     = Font String
     | FontSize Int
     | Color String
+    | BackgroundColor String
 
 
 styleAttrsCat : StyleAttribute -> String
@@ -869,12 +1192,98 @@ styleAttrsCat sa =
         Color _ ->
             "Color"
 
+        BackgroundColor _ ->
+            "BackgroundColor"
 
-inlineStyleToString : InlineStyle -> String
-inlineStyleToString is =
+
+articleFont : List StyleAttribute -> Attribute msg
+articleFont attrs =
+    List.filterMap extractFont attrs
+        |> List.head
+        |> Maybe.withDefault "Times New Roman"
+        |> (\f ->
+                Font.family
+                    [ Font.typeface f ]
+           )
+
+
+extractFont : StyleAttribute -> Maybe String
+extractFont attr =
+    case attr of
+        Font f ->
+            Just f
+
+        _ ->
+            Nothing
+
+
+articleFontSize : List StyleAttribute -> Attribute msg
+articleFontSize attrs =
+    List.filterMap extractFontSize attrs
+        |> List.head
+        |> Maybe.withDefault 18
+        |> (\fs -> Font.size fs)
+
+
+extractFontSize : StyleAttribute -> Maybe Int
+extractFontSize attr =
+    case attr of
+        FontSize n ->
+            Just n
+
+        _ ->
+            Nothing
+
+
+articleColor : List StyleAttribute -> Attribute msg
+articleColor attrs =
+    List.filterMap extractColor attrs
+        |> List.head
+        |> Maybe.andThen (\s -> Dict.get s webColors)
+        |> Maybe.withDefault "000000"
+        |> hexToColor
+        |> Font.color
+
+
+extractColor : StyleAttribute -> Maybe String
+extractColor attr =
+    case attr of
+        Color c ->
+            Just c
+
+        _ ->
+            Nothing
+
+
+articleBackgroundColor : List StyleAttribute -> Attribute msg
+articleBackgroundColor attrs =
+    List.filterMap extractBackgroundColor attrs
+        |> List.head
+        |> Maybe.andThen (\s -> Dict.get s webColors)
+        |> Maybe.withDefault "FFFFFF"
+        |> hexToColor
+        |> Background.color
+
+
+extractBackgroundColor : StyleAttribute -> Maybe String
+extractBackgroundColor attr =
+    case attr of
+        BackgroundColor c ->
+            Just c
+
+        _ ->
+            Nothing
+
+
+
+-------------------------------------------------------------------------------
+
+
+customStyleToString : CustomStyle -> String
+customStyleToString is =
     case is of
         Styled { styled, attrs } ->
-            "[ " ++ styled ++ " ]" ++ attrsToString attrs
+            "[" ++ styled ++ "]" ++ attrsToString attrs
 
         _ ->
             ""
@@ -893,6 +1302,9 @@ attrsToString attrs =
 
                 Color c ->
                     "color: " ++ c
+
+                BackgroundColor c ->
+                    "background color: " ++ c
     in
     List.map attrToStr attrs
         |> String.join ", "
@@ -925,14 +1337,22 @@ styleAttributeToElementAttr attrs attr =
                         |> Font.color
                    ]
 
+        BackgroundColor s ->
+            attrs
+                ++ [ Dict.get s webColors
+                        |> Maybe.withDefault "000000"
+                        |> hexToColor
+                        |> Background.color
+                   ]
 
-inlineStyles : Parser (List InlineStyle)
-inlineStyles =
+
+customStyles : Parser (List CustomStyle)
+customStyles =
     let
         helper styles =
             oneOf
                 [ succeed (\style -> Loop (style :: styles))
-                    |= inlineStyle
+                    |= customStyle
                     |> backtrackable
                 , symbol "["
                     |> Parser.map (\_ -> Loop (Regular "[" :: styles))
@@ -976,7 +1396,7 @@ inlineStyles =
     loop [] helper
 
 
-type alias InlineStyleBounds =
+type alias CustomStyleBounds =
     { bodyStart : Int
     , bodyStop : Int
     , styleStart : Int
@@ -984,8 +1404,8 @@ type alias InlineStyleBounds =
     }
 
 
-inlineStyleBoundsToString : InlineStyleBounds -> String
-inlineStyleBoundsToString { bodyStart, bodyStop, styleStart, styleStop } =
+customStyleBoundsToString : CustomStyleBounds -> String
+customStyleBoundsToString { bodyStart, bodyStop, styleStart, styleStop } =
     String.fromInt bodyStart
         ++ "-"
         ++ String.fromInt bodyStop
@@ -997,7 +1417,7 @@ inlineStyleBoundsToString { bodyStart, bodyStop, styleStart, styleStop } =
 
 cursorInBounds : Int -> String -> Bool
 cursorInBounds cursorPos bounds =
-    case stringToInlineStyleBounds bounds of
+    case stringToCustomStyleBounds bounds of
         Just { styleStart, styleStop } ->
             (cursorPos >= styleStart) && (cursorPos < styleStop)
 
@@ -1005,26 +1425,26 @@ cursorInBounds cursorPos bounds =
             False
 
 
-stringToInlineStyleBounds : String -> Maybe InlineStyleBounds
-stringToInlineStyleBounds s =
+stringToCustomStyleBounds : String -> Maybe CustomStyleBounds
+stringToCustomStyleBounds s =
     case
         String.split "-" s
             |> List.filterMap String.toInt
     of
         bodyStart :: bodyStop :: styleStart :: styleStop :: [] ->
-            Just <| InlineStyleBounds bodyStart bodyStop styleStart styleStop
+            Just <| CustomStyleBounds bodyStart bodyStop styleStart styleStop
 
         _ ->
             Nothing
 
 
-inlineStylesOffsets : Parser (Dict String InlineStyle)
-inlineStylesOffsets =
+customStylesOffsets : Parser (Dict String CustomStyle)
+customStylesOffsets =
     let
         helper offsets =
             oneOf
                 [ succeed (\offset -> Loop (offset :: offsets))
-                    |= inlineStyleOffsets
+                    |= customStyleOffsets
                     |> backtrackable
                 , succeed (Loop offsets)
                     |. symbol "["
@@ -1037,15 +1457,15 @@ inlineStylesOffsets =
                 ]
     in
     loop [] helper
-        |> Parser.map (List.map (Tuple.mapFirst inlineStyleBoundsToString))
+        |> Parser.map (List.map (Tuple.mapFirst customStyleBoundsToString))
         |> Parser.map Dict.fromList
 
 
-inlineStyleOffsets : Parser ( InlineStyleBounds, InlineStyle )
-inlineStyleOffsets =
+customStyleOffsets : Parser ( CustomStyleBounds, CustomStyle )
+customStyleOffsets =
     succeed
         (\bodyStart s bodyStop styleStart attrs styleStop ->
-            ( InlineStyleBounds bodyStart bodyStop styleStart styleStop
+            ( CustomStyleBounds bodyStart bodyStop styleStart styleStop
             , Styled { styled = s, attrs = attrs }
             )
         )
@@ -1068,8 +1488,8 @@ inlineStyleOffsets =
         |= getOffset
 
 
-inlineStyle : Parser InlineStyle
-inlineStyle =
+customStyle : Parser CustomStyle
+customStyle =
     succeed (\s attrs -> Styled { styled = s, attrs = attrs })
         |. symbol "["
         |= (chompUntil "]"
@@ -1114,6 +1534,8 @@ styleAttribute =
         , attribute FontSize "size" int
             |> backtrackable
         , attribute Color "color" value
+            |> backtrackable
+        , attribute BackgroundColor "background color" value
         ]
 
 
@@ -1135,13 +1557,14 @@ value =
                 && (c /= '}')
         )
         |> getChompedString
+        |> Parser.map String.trimRight
         |> Parser.andThen
             (\s ->
                 if s == "" then
                     problem "empty value"
 
                 else
-                    succeed (String.trimRight s)
+                    succeed s
             )
 
 
@@ -1152,7 +1575,7 @@ value =
 ------------------------------------
 
 
-addCustomStyles : Block b InlineStyle -> Block b InlineStyle
+addCustomStyles : Block b CustomStyle -> Block b CustomStyle
 addCustomStyles block =
     case block of
         BlankLine s ->
