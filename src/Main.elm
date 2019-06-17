@@ -1,4 +1,4 @@
-module Main exposing (Flags, Model, Msg(..), Path, doesSelectionStartsALine, findFirstOccIndex, foldInlines, indexLines, init, isSelectionALine, main, sampleString, subscriptions, update, view)
+module Main exposing (Flags, Model, Msg(..), Path, doesSelectionStartsALine, findFirstOccIndex, indexLines, init, isSelectionALine, main, sampleString, subscriptions, update, view)
 
 import Browser exposing (document)
 import Browser.Events exposing (onAnimationFrame, onResize)
@@ -27,14 +27,14 @@ import Parser exposing (..)
 import Random
 
 
-type alias Model b =
+type alias Model =
     { seed : Random.Seed
     , maxWidth : Int
     , selected : Maybe Selection
     , setSelection : Maybe E.Value
     , rawInput : String
     , undoBuffer : List UndoAction
-    , parsedInput : List (Block b CustomInline)
+    , parsedInput : List (Block CustomBlock CustomInline)
     , stylesIndexes : Dict String CustomInline
     , selectionStyle : Maybe ( CustomInlineBounds, CustomInline )
     , articleStyle : List StyleAttribute
@@ -145,7 +145,7 @@ type alias Flags =
     }
 
 
-init : Flags -> ( Model b, Cmd Msg )
+init : Flags -> ( Model, Cmd Msg )
 init flags =
     ( { seed = Random.initialSeed flags.currentTime
       , maxWidth = flags.width
@@ -169,7 +169,7 @@ init flags =
     )
 
 
-update : Msg -> Model b -> ( Model b, Cmd Msg )
+update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         ---------------------------
@@ -186,7 +186,8 @@ update msg model =
                 parsedInput =
                     Block.parse (Just { defaultOptions | softAsHardLineBreak = True })
                         valueStr
-                        |> List.map addCustomStyles
+                        |> List.map addCustomInlines
+                        |> List.concatMap addCustomBlocks
 
                 stylesIndexes =
                     case Parser.run customStylesOffsets valueStr of
@@ -275,7 +276,8 @@ update msg model =
                         parsedInput =
                             Block.parse (Just { defaultOptions | softAsHardLineBreak = True })
                                 valueStr
-                                |> List.map addCustomStyles
+                                |> List.map addCustomInlines
+                                |> List.concatMap addCustomBlocks
 
                         stylesIndexes =
                             case Parser.run customStylesOffsets valueStr of
@@ -495,7 +497,7 @@ findCustomStyleFromCursorPos stylesIndexes s =
             )
 
 
-insertMarkdown : Model b -> (String -> String) -> Model b
+insertMarkdown : Model -> (String -> String) -> Model
 insertMarkdown model f =
     case model.selected of
         Just ({ start, stop } as sel) ->
@@ -620,53 +622,57 @@ doesSelectionStartsALine rawInput mbSelection =
 -------------------------------------------------------------------------------
 
 
-insertCustomStyle : Model b -> List StyleAttribute -> Model b
+insertCustomStyle : Model -> List StyleAttribute -> Model
 insertCustomStyle model newStyleAttrs =
     case model.selected of
         Just ({ start, stop } as sel) ->
-            let
-                newStyle =
-                    Styled
-                        { styled = String.slice start stop model.rawInput
-                        , attrs = newStyleAttrs
-                        }
+            if start /= stop then
+                let
+                    newStyle =
+                        Styled
+                            { styled = String.slice start stop model.rawInput
+                            , attrs = newStyleAttrs
+                            }
 
-                newStyleStr =
-                    customStyleToString newStyle
+                    newStyleStr =
+                        customStyleToString newStyle
 
-                newSelection =
-                    case Parser.run customStyleOffsets newStyleStr of
-                        Ok ( { styleStart, styleStop }, _ ) ->
-                            Selection (stop + styleStart) (stop + styleStop)
+                    newSelection =
+                        case Parser.run customStyleOffsets newStyleStr of
+                            Ok ( { styleStart, styleStop }, _ ) ->
+                                Selection (stop + styleStart) (stop + styleStop)
 
-                        _ ->
-                            sel
+                            _ ->
+                                sel
 
-                prefix =
-                    String.left start model.rawInput
+                    prefix =
+                        String.left start model.rawInput
 
-                suffix =
-                    String.dropLeft stop model.rawInput
+                    suffix =
+                        String.dropLeft stop model.rawInput
 
-                newValueStr =
-                    prefix ++ newStyleStr ++ suffix
-            in
-            update (TextInput (CustomInput newSelection newValueStr))
-                { model | setSelectionOnNextFrame = True }
-                |> Tuple.first
+                    newValueStr =
+                        prefix ++ newStyleStr ++ suffix
+                in
+                update (TextInput (CustomInput newSelection newValueStr))
+                    { model | setSelectionOnNextFrame = True }
+                    |> Tuple.first
+
+            else
+                { model
+                    | articleStyle =
+                        uniqueBy styleAttrsCat <|
+                            newStyleAttrs
+                                ++ model.articleStyle
+                    , undoBuffer =
+                        List.take 5 <| ArticleStyleModif model.articleStyle :: model.undoBuffer
+                }
 
         _ ->
-            { model
-                | articleStyle =
-                    uniqueBy styleAttrsCat <|
-                        newStyleAttrs
-                            ++ model.articleStyle
-                , undoBuffer =
-                    List.take 5 <| ArticleStyleModif model.articleStyle :: model.undoBuffer
-            }
+            model
 
 
-updateCustomStyle : Model b -> ( CustomInlineBounds, CustomInline ) -> List StyleAttribute -> Model b
+updateCustomStyle : Model -> ( CustomInlineBounds, CustomInline ) -> List StyleAttribute -> Model
 updateCustomStyle model ( { styleStart, styleStop }, cs ) newStyleAttrs =
     let
         newStyle =
@@ -689,7 +695,7 @@ updateCustomStyle model ( { styleStart, styleStop }, cs ) newStyleAttrs =
         |> Tuple.first
 
 
-removeCustomStyle : Model b -> ( CustomInlineBounds, CustomInline ) -> Model b
+removeCustomStyle : Model -> ( CustomInlineBounds, CustomInline ) -> Model
 removeCustomStyle model ( { bodyStart, bodyStop, styleStop }, _ ) =
     let
         prefix =
@@ -725,7 +731,7 @@ combineCustomStyles current new =
 --------------------
 
 
-view : Model b -> Browser.Document Msg
+view : Model -> Browser.Document Msg
 view model =
     { title = ""
     , body =
@@ -736,7 +742,17 @@ view model =
                 , width (px (min 1000 model.maxWidth))
                 , centerX
                 ]
-                [ markdownControlsView model
+                [ --paragraph
+                  --    [ Background.color <| rgba 0.8 0.5 0.7 0.3
+                  --    , Font.family
+                  --        [ Font.typeface "Times New Roman"
+                  --        , Font.serif
+                  --        ]
+                  --    , Font.size 18
+                  --    ]
+                  --    [ text "Tarifs pour un séjour dans le gîte \" Le vieux lilas \" comprenant les prestations suivantes : mise à disposition de l'équipement inventorié, fourniture des draps, serviettes de toilette et linge de maison, ménage." ]
+                  --,
+                  markdownControlsView model
                 , customStylesControlView model
                 , customTextArea
                     [ width fill
@@ -746,7 +762,12 @@ view model =
                     500
                     model.rawInput
                 , blocksToElements (\_ -> NoOp) model.parsedInput
-                    |> textColumn
+                    |> (if model.maxWidth > 1000 then
+                            textColumn
+
+                        else
+                            column
+                       )
                         [ width fill
                         , spacing 15
                         , padding 15
@@ -768,7 +789,7 @@ view model =
     }
 
 
-selectionInfoView : Model b -> Element Msg
+selectionInfoView : Model -> Element Msg
 selectionInfoView model =
     let
         selectionView =
@@ -788,7 +809,7 @@ selectionInfoView model =
         ]
 
 
-markdownControlsView : Model b -> Element Msg
+markdownControlsView : Model -> Element Msg
 markdownControlsView model =
     row
         [ spacing 15
@@ -861,7 +882,7 @@ markdownControlsView model =
         ]
 
 
-customStylesControlView : Model b -> Element Msg
+customStylesControlView : Model -> Element Msg
 customStylesControlView model =
     row
         [ spacing 15
@@ -908,7 +929,7 @@ customStylesControlView model =
         ]
 
 
-fontsControllerView : Model b -> Element Msg
+fontsControllerView : Model -> Element Msg
 fontsControllerView model =
     let
         fontOptionView selectedFont f =
@@ -1127,12 +1148,12 @@ decodeSelection =
 -----------------------------------------
 
 
-blocksToElements : (String -> msg) -> List (Block b CustomInline) -> List (Element msg)
+blocksToElements : (String -> msg) -> List (Block CustomBlock CustomInline) -> List (Element msg)
 blocksToElements downloadHandler blocks =
     List.map (blockToElement downloadHandler 0) blocks
 
 
-blockToElement : (String -> msg) -> Int -> Block b CustomInline -> Element msg
+blockToElement : (String -> msg) -> Int -> Block CustomBlock CustomInline -> Element msg
 blockToElement downloadHandler offset block =
     case block of
         BlankLine s ->
@@ -1158,7 +1179,10 @@ blockToElement downloadHandler offset block =
 
         Paragraph raw inlines ->
             paragraph
-                []
+                [ width fill
+
+                --, Background.color (rgba 0 1 1 0.2)
+                ]
                 (List.concatMap (inlinesToElements downloadHandler []) inlines)
 
         BlockQuote blocks ->
@@ -1214,8 +1238,43 @@ blockToElement downloadHandler offset block =
                 []
                 (List.concatMap (inlinesToElements downloadHandler []) inlines)
 
-        Block.Custom b llistBlocks ->
-            Element.none
+        Block.Custom (ImageBlock { description, src, alignment }) _ ->
+            column
+                ([]
+                    --Background.color (rgb 1 0 0) ]
+                    ++ (case alignment of
+                            AlignLeft ->
+                                [ alignLeft
+                                , paddingEach
+                                    { sides
+                                        | right = 10
+                                    }
+                                ]
+
+                            AlignRight ->
+                                [ alignRight
+                                , paddingEach
+                                    { sides | left = 10 }
+                                ]
+
+                            CenterAlign ->
+                                [ centerX
+                                ]
+                       )
+                )
+                [ image
+                    [ centerX ]
+                    { src = src
+                    , description = description
+                    }
+                , paragraph
+                    [ Font.italic
+                    , Font.size 14
+                    , width fill
+                    , Font.center
+                    ]
+                    [ text description ]
+                ]
 
 
 headings downloadHandler raw level inlines =
@@ -1257,11 +1316,11 @@ headings downloadHandler raw level inlines =
         (List.concatMap (inlinesToElements downloadHandler []) inlines)
 
 
-parseCustomStyles : Inline CustomInline -> List (Inline CustomInline)
-parseCustomStyles inline =
+parseCustomInlines : Inline CustomInline -> List (Inline CustomInline)
+parseCustomInlines inline =
     case inline of
         Text s ->
-            case Parser.run customStyles s of
+            case Parser.run customInlines s of
                 Ok res ->
                     List.foldr
                         (\is acc ->
@@ -1279,10 +1338,10 @@ parseCustomStyles inline =
                     [ Text s ]
 
         Link url mbTitle inlines ->
-            [ Link url mbTitle (List.concatMap parseCustomStyles inlines) ]
+            [ Link url mbTitle (List.concatMap parseCustomInlines inlines) ]
 
         Emphasis level inlines ->
-            [ Emphasis level (List.concatMap parseCustomStyles inlines) ]
+            [ Emphasis level (List.concatMap parseCustomInlines inlines) ]
 
         _ ->
             [ inline ]
@@ -1292,8 +1351,9 @@ inlinesToElements : (String -> msg) -> List (Attribute msg) -> Inline CustomInli
 inlinesToElements downloadHandler attrs inline =
     case inline of
         Text s ->
-            [ el attrs (text s) ]
+            [ text s ]
 
+        --el attrs (text s) ]
         HardLineBreak ->
             [ el attrs (html <| Html.br [] []) ]
 
@@ -1332,11 +1392,10 @@ inlinesToElements downloadHandler attrs inline =
                     )
                     { url = url
                     , label =
-                        paragraph
-                            []
-                            (List.concatMap (inlinesToElements downloadHandler attrs) inlines)
-
-                    --text <| Inline.extractText inlines
+                        --paragraph
+                        --    []
+                        --    (List.concatMap (inlinesToElements downloadHandler attrs) inlines)
+                        text <| Inline.extractText inlines
                     }
                 ]
 
@@ -1372,7 +1431,7 @@ inlinesToElements downloadHandler attrs inline =
             in
             List.concatMap (inlinesToElements downloadHandler attrs_) inlines
 
-        Inline.Custom (CustomImage _) _ ->
+        Inline.Custom (CustomImage { description, src, alignment }) _ ->
             []
 
         Inline.Custom (Styled styled) inlines ->
@@ -1380,6 +1439,21 @@ inlinesToElements downloadHandler attrs inline =
 
         Inline.Custom (Regular _) _ ->
             []
+
+
+
+-------------------------------------------------------------------------------
+-------------------
+-- Custom Blocks --
+-------------------
+
+
+type CustomBlock
+    = ImageBlock
+        { src : String
+        , description : String
+        , alignment : Alignment
+        }
 
 
 
@@ -1427,7 +1501,10 @@ type StyleAttribute
     | FontSize Int
     | Color String
     | BackgroundColor String
-    | Align Alignment
+
+
+
+--| Align Alignment
 
 
 type Alignment
@@ -1451,8 +1528,10 @@ styleAttrsCat sa =
         BackgroundColor _ ->
             "BackgroundColor"
 
-        Align _ ->
-            "alignment"
+
+
+--Align _ ->
+--    "alignment"
 
 
 articleFont : List StyleAttribute -> Attribute msg
@@ -1565,8 +1644,8 @@ attrsToString attrs =
                 BackgroundColor c ->
                     "background color: " ++ c
 
-                Align a ->
-                    "align: " ++ alignmentToStr a
+        --Align a ->
+        --    "align: " ++ alignmentToStr a
     in
     List.map attrToStr attrs
         |> String.join ", "
@@ -1619,27 +1698,17 @@ styleAttributeToElementAttr attrs attr =
                         |> Background.color
                    ]
 
-        Align a ->
-            attrs
-                ++ (case a of
-                        AlignLeft ->
-                            [ alignLeft ]
 
-                        AlignRight ->
-                            [ alignRight ]
-
-                        CenterAlign ->
-                            [ centerX ]
-                   )
-
-
-customStyles : Parser (List CustomInline)
-customStyles =
+customInlines : Parser (List CustomInline)
+customInlines =
     let
         helper styles =
             oneOf
                 [ succeed (\style -> Loop (style :: styles))
                     |= customStyle
+                    |> backtrackable
+                , succeed (\style -> Loop (style :: styles))
+                    |= customImage
                     |> backtrackable
                 , symbol "["
                     |> Parser.map (\_ -> Loop (Regular "[" :: styles))
@@ -1793,6 +1862,37 @@ customStyle =
         |= styleAttributes
 
 
+customImage : Parser CustomInline
+customImage =
+    succeed
+        (\dscr src align ->
+            CustomImage
+                { src = src
+                , description = dscr
+                , alignment = align
+                }
+        )
+        |. symbol "["
+        |= (chompUntil "]"
+                |> getChompedString
+           )
+        |. symbol "]"
+        |. spaces
+        |. symbol "{"
+        |. spaces
+        |. keyword "image"
+        |. spaces
+        |. symbol "|"
+        |. spaces
+        |= attribute identity "src" value
+        |. spaces
+        |. symbol ","
+        |. spaces
+        |= attribute identity "align" alignmentParser
+        |. spaces
+        |. symbol "}"
+
+
 styleAttributes : Parser (List StyleAttribute)
 styleAttributes =
     let
@@ -1822,8 +1922,9 @@ styleAttribute =
             |> backtrackable
         , attribute Color "color" value
             |> backtrackable
-        , attribute Align "align" alignment
-            |> backtrackable
+
+        --, attribute Align "align" alignment
+        --    |> backtrackable
         , attribute BackgroundColor "background color" value
         ]
 
@@ -1857,8 +1958,8 @@ value =
             )
 
 
-alignment : Parser Alignment
-alignment =
+alignmentParser : Parser Alignment
+alignmentParser =
     value
         |> Parser.andThen
             (\a ->
@@ -1883,8 +1984,8 @@ alignment =
 ------------------------------------
 
 
-addCustomStyles : Block b CustomInline -> Block b CustomInline
-addCustomStyles block =
+addCustomInlines : Block CustomBlock CustomInline -> Block CustomBlock CustomInline
+addCustomInlines block =
     case block of
         BlankLine s ->
             BlankLine s
@@ -1893,64 +1994,93 @@ addCustomStyles block =
             ThematicBreak
 
         Heading raw level inlines ->
-            Heading raw level (List.concatMap parseCustomStyles inlines)
+            Heading raw level (List.concatMap parseCustomInlines inlines)
 
         CodeBlock cb raw ->
             CodeBlock cb raw
 
         Paragraph raw inlines ->
-            Paragraph raw (List.concatMap parseCustomStyles inlines)
+            Paragraph raw (List.concatMap parseCustomInlines inlines)
 
         BlockQuote blocks ->
-            BlockQuote (List.map addCustomStyles blocks)
+            BlockQuote (List.map addCustomInlines blocks)
 
         List listblock llistBlocks ->
-            List listblock (List.map (List.map addCustomStyles) llistBlocks)
+            List listblock (List.map (List.map addCustomInlines) llistBlocks)
 
         PlainInlines inlines ->
-            PlainInlines (List.concatMap parseCustomStyles inlines)
+            PlainInlines (List.concatMap parseCustomInlines inlines)
 
         Block.Custom b blocks ->
-            Block.Custom b (List.map addCustomStyles blocks)
+            Block.Custom b (List.map addCustomInlines blocks)
 
 
-foldInlines :
-    (Inline i
-     -> a
-     -> a
-    )
-    -> a
-    -> Block b i
-    -> a
-foldInlines f acc block =
+addCustomBlocks : Block CustomBlock CustomInline -> List (Block CustomBlock CustomInline)
+addCustomBlocks block =
     case block of
-        Paragraph rawText inlines ->
-            List.foldr f acc inlines
+        Paragraph raw inlines ->
+            extractCustomInlines inlines
 
-        Heading rawText level inlines ->
-            List.foldr f acc inlines
+        other ->
+            [ other ]
 
-        PlainInlines inlines ->
-            List.foldr f acc inlines
 
-        BlockQuote blocks ->
-            List.foldr (\b acc_ -> foldInlines f acc_ b) acc blocks
+extractCustomInlines : List (Inline CustomInline) -> List (Block CustomBlock CustomInline)
+extractCustomInlines inlines =
+    let
+        helper blocksAcc inlinesAcc rest =
+            case rest of
+                x :: xs ->
+                    case inlineToCustomBlock x of
+                        Just b ->
+                            helper
+                                (b
+                                    :: (if inlinesAcc == [] then
+                                            []
 
-        List listBlock items ->
-            List.foldr
-                (\item acc_ ->
-                    List.foldr (\b acc__ -> foldInlines f acc__ b)
-                        acc_
-                        item
-                )
-                acc
-                items
+                                        else
+                                            let
+                                                is =
+                                                    List.reverse inlinesAcc
+                                            in
+                                            [ Paragraph (Inline.extractText is) is ]
+                                       )
+                                    ++ blocksAcc
+                                )
+                                []
+                                xs
 
-        Block.Custom customBlock blocks ->
-            List.foldr (\b acc_ -> foldInlines f acc_ b) acc blocks
+                        Nothing ->
+                            helper
+                                blocksAcc
+                                (x :: inlinesAcc)
+                                xs
+
+                [] ->
+                    List.reverse <|
+                        (if inlinesAcc == [] then
+                            []
+
+                         else
+                            let
+                                is =
+                                    List.reverse inlinesAcc
+                            in
+                            [ Paragraph (Inline.extractText is) is ]
+                        )
+                            ++ blocksAcc
+    in
+    helper [] [] inlines
+
+
+inlineToCustomBlock : Inline CustomInline -> Maybe (Block CustomBlock CustomInline)
+inlineToCustomBlock inline =
+    case inline of
+        Inline.Custom (CustomImage meta) _ ->
+            Just <| Block.Custom (ImageBlock meta) []
 
         _ ->
-            acc
+            Nothing
 
 
 
@@ -1958,6 +2088,14 @@ foldInlines f acc block =
 ----------
 -- Misc --
 ----------
+
+
+sides =
+    { top = 0
+    , left = 0
+    , right = 0
+    , bottom = 0
+    }
 
 
 findFirstOccIndex : String -> String -> ( Maybe Int, Int, String )
@@ -2378,9 +2516,7 @@ sampleString =
 
 **La durée minimum du [ séjour ]{style| color: khaki} est de deux nuits.**
 
-![alt text](https://s14-eu5.startpage.com/wikioimage/5c5cdc254ff34ff9d620f47cb88c3d0b.png)
-
-Les animaux de compagnie sont admis sous réserve qu'ils n'occasionnent aucunes dégradations ni nuisances sonores. Ils sont accueillis au gîte sans majoration tarifaire.
+[elm logo]{image| src: https://s14-eu5.startpage.com/wikioimage/5c5cdc254ff34ff9d620f47cb88c3d0b.png, align: left} Les animaux de compagnie sont admis sous réserve qu'ils n'occasionnent aucunes dégradations ni nuisances sonores. Ils sont accueillis au gîte sans majoration tarifaire.
 
 * 2 [ nuits ]{style| color: dodger blue} : [ 150 ]{style| color: crimson} €
 * 3 nuits : [ 2 ]{style| color: aqua}[ 0 ]{style| color: dark orchid}0 €
