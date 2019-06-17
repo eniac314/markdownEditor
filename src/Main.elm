@@ -1372,6 +1372,9 @@ inlinesToElements downloadHandler attrs inline =
             in
             List.concatMap (inlinesToElements downloadHandler attrs_) inlines
 
+        Inline.Custom (CustomImage _) _ ->
+            []
+
         Inline.Custom (Styled styled) inlines ->
             [ styledToElement attrs styled ]
 
@@ -1390,6 +1393,11 @@ type CustomInline
     = Styled
         { styled : String
         , attrs : List StyleAttribute
+        }
+    | CustomImage
+        { src : String
+        , description : String
+        , alignment : Alignment
         }
     | Regular String
 
@@ -1662,15 +1670,15 @@ customStyles =
                     else
                         List.reverse <| Regular acc :: res
 
-                (Styled s) :: xs_ ->
-                    if acc == "" then
-                        concatRegs "" (Styled s :: res) xs_
-
-                    else
-                        concatRegs "" (Styled s :: Regular acc :: res) xs_
-
                 (Regular r) :: xs_ ->
                     concatRegs (acc ++ r) res xs_
+
+                other :: xs_ ->
+                    if acc == "" then
+                        concatRegs "" (other :: res) xs_
+
+                    else
+                        concatRegs "" (other :: Regular acc :: res) xs_
     in
     loop [] helper
 

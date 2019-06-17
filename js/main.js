@@ -6083,7 +6083,7 @@ var author$project$Main$TextInput = function (a) {
 	return {$: 0, a: a};
 };
 var author$project$Main$Regular = function (a) {
-	return {$: 1, a: a};
+	return {$: 2, a: a};
 };
 var author$project$Main$Align = function (a) {
 	return {$: 4, a: a};
@@ -6867,15 +6867,22 @@ var author$project$Main$customStyles = function () {
 							author$project$Main$Regular(acc),
 							res));
 				} else {
-					if (!xs.a.$) {
-						var s = xs.a.a;
+					if (xs.a.$ === 2) {
+						var r = xs.a.a;
+						var xs_ = xs.b;
+						var $temp$acc = _Utils_ap(acc, r),
+							$temp$res = res,
+							$temp$xs = xs_;
+						acc = $temp$acc;
+						res = $temp$res;
+						xs = $temp$xs;
+						continue concatRegs;
+					} else {
+						var other = xs.a;
 						var xs_ = xs.b;
 						if (acc === '') {
 							var $temp$acc = '',
-								$temp$res = A2(
-								elm$core$List$cons,
-								author$project$Main$Styled(s),
-								res),
+								$temp$res = A2(elm$core$List$cons, other, res),
 								$temp$xs = xs_;
 							acc = $temp$acc;
 							res = $temp$res;
@@ -6885,7 +6892,7 @@ var author$project$Main$customStyles = function () {
 							var $temp$acc = '',
 								$temp$res = A2(
 								elm$core$List$cons,
-								author$project$Main$Styled(s),
+								other,
 								A2(
 									elm$core$List$cons,
 									author$project$Main$Regular(acc),
@@ -6896,16 +6903,6 @@ var author$project$Main$customStyles = function () {
 							xs = $temp$xs;
 							continue concatRegs;
 						}
-					} else {
-						var r = xs.a.a;
-						var xs_ = xs.b;
-						var $temp$acc = _Utils_ap(acc, r),
-							$temp$res = res,
-							$temp$xs = xs_;
-						acc = $temp$acc;
-						res = $temp$res;
-						xs = $temp$xs;
-						continue concatRegs;
 					}
 				}
 			}
@@ -7068,7 +7065,7 @@ var author$project$Main$parseCustomStyles = function (inline) {
 					elm$core$List$foldr,
 					F2(
 						function (is, acc) {
-							if (is.$ === 1) {
+							if (is.$ === 2) {
 								var r = is.a;
 								return A2(
 									elm$core$List$cons,
@@ -18142,15 +18139,18 @@ var author$project$Main$inlinesToElements = F3(
 					A2(author$project$Main$inlinesToElements, downloadHandler, attrs_),
 					inlines);
 			default:
-				if (!inline.a.$) {
-					var styled = inline.a.a;
-					var inlines = inline.b;
-					return _List_fromArray(
-						[
-							A2(author$project$Main$styledToElement, attrs, styled)
-						]);
-				} else {
-					return _List_Nil;
+				switch (inline.a.$) {
+					case 1:
+						return _List_Nil;
+					case 0:
+						var styled = inline.a.a;
+						var inlines = inline.b;
+						return _List_fromArray(
+							[
+								A2(author$project$Main$styledToElement, attrs, styled)
+							]);
+					default:
+						return _List_Nil;
 				}
 		}
 	});
